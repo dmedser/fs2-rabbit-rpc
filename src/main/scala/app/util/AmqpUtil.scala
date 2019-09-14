@@ -35,11 +35,11 @@ object AmqpUtil {
   def decodeData[T]: DecodeDataPartiallyApplied[T] = new DecodeDataPartiallyApplied[T]
 
   private[util] class DecodeDataPartiallyApplied[T] {
-    def apply[F[_] : Sync](decodedString: String)(implicit decoder: DataDecoder[T], log: Logger[F]): F[T] =
+    def apply[F[_]](decodedString: String)(implicit F: Sync[F], decoder: DataDecoder[T], log: Logger[F]): F[T] =
       (for {
-        decodedJson    <- Sync[F].delay(parser.decode[Message[Json]](decodedString))
+        decodedJson    <- F.delay(parser.decode[Message[Json]](decodedString))
         _              <- log.debug(s"Decoded json:\n$decodedJson")
-        decodedMessage <- Sync[F].delay(decodedJson.flatMap(Message.decodeData[T]))
+        decodedMessage <- F.delay(decodedJson.flatMap(Message.decodeData[T]))
         _              <- log.debug(s"Decoded message:\n$decodedMessage")
       } yield decodedMessage)
         .widen[Either[Throwable, T]]

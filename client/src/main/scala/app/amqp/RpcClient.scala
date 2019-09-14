@@ -17,14 +17,12 @@ import io.chrisdavenport.log4cats.extras.implicits._
 import io.chrisdavenport.log4cats.slf4j.Slf4jLogger
 import io.circe.Encoder
 
-class RpcClient[F[_] : Sync](rpcQueue: QueueName, rabbit: Fs2Rabbit[F], connection: AMQPConnection)(
-  implicit log: Logger[F]
+class RpcClient[F[_] : Sync](rpcQueue: QueueName, rabbit: Fs2Rabbit[F])(
+  implicit log: Logger[F], channel: AMQPChannel
 ) {
 
   def call[Request <: RpcRequest : Encoder](request: Request): Stream[F, RpcResponse] =
     for {
-      implicit0(channel: AMQPChannel) <- Stream.resource(rabbit.createChannel(connection))
-
       queueToReply <- Stream.eval(rabbit.declareQueue)
 
       correlationId = UUID.randomUUID().toString
@@ -39,7 +37,7 @@ class RpcClient[F[_] : Sync](rpcQueue: QueueName, rabbit: Fs2Rabbit[F], connecti
       )
 
       _ <- Stream(messageToSend)
-        .covary[F]
+        .covary
         .through(jsonPipe[Message[Request]])
         .evalMap(publisher)
 
@@ -65,8 +63,8 @@ class RpcClient[F[_] : Sync](rpcQueue: QueueName, rabbit: Fs2Rabbit[F], connecti
 }
 
 object RpcClient {
-  def apply[F[_] : Sync](rpcQueue: QueueName, rabbit: Fs2Rabbit[F], connection: AMQPConnection): F[RpcClient[F]] =
+  def create[F[_] : Sync](rpcQueue: QueueName, rabbit: Fs2Rabbit[F])(implicit channel: AMQPChannel): F[RpcClient[F]] =
     for {
       implicit0(log: Logger[F]) <- Slf4jLogger.create
-    } yield new RpcClient(rpcQueue, rabbit, connection)
+    } yield new RpcClient(rpcQueue, rabbit)
 }

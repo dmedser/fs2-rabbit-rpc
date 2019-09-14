@@ -7,13 +7,14 @@ import app.util.StreamUtil._
 import cats.effect._
 import cats.syntax.functor._
 import dev.profunktor.fs2rabbit.interpreter.Fs2Rabbit
+import dev.profunktor.fs2rabbit.model.AMQPChannel
 import fs2.Stream
 import io.chrisdavenport.log4cats.Logger
 import io.chrisdavenport.log4cats.extras.implicits._
 import io.chrisdavenport.log4cats.slf4j.Slf4jLogger
+import monix.eval.{Task, TaskApp}
 
 final case class Application[F[_] : Sync](rpcClient: RpcClient[F], log: Logger[F]) {
-
   def run: F[ExitCode] =
     (for {
       _        <- log.mapK[Stream[F, *]](liftK).info("RPC Client")
@@ -22,18 +23,21 @@ final case class Application[F[_] : Sync](rpcClient: RpcClient[F], log: Logger[F
     } yield ()).compile.drain as ExitCode.Success
 }
 
-object Application {
+object Application extends TaskApp {
 
-  private def mkApplication[F[_] : Sync](rpcClient: RpcClient[F], log: Logger[F]): F[Application[F]] =
-    Sync[F].delay(Application(rpcClient, log))
+  def run(args: List[String]): Task[ExitCode] = Application.resource.use(_.run)
 
-  def resource[F[_] : ConcurrentEffect]: Resource[F, Application[F]] =
+  private def mkApplication[F[_]](rpcClient: RpcClient[F], log: Logger[F])(implicit F: Sync[F]): F[Application[F]] =
+    F.delay(Application(rpcClient, log))
+
+  private def resource[F[_] : ConcurrentEffect]: Resource[F, Application[F]] =
     for {
-      config      <- Resource.liftF(AppConfig.load)
-      rabbit      <- Resource.liftF(Fs2Rabbit(config.fs2Rabbit))
+      config      <- Resource.liftF(AppConfig.load[F])
+      rabbit      <- Resource.liftF(Fs2Rabbit[F](config.fs2Rabbit))
       connection  <- rabbit.createConnection
-      rpcClient   <- Resource.liftF(RpcClient(config.rpc.queueName, rabbit, connection))
-      log         <- Resource.liftF(Slf4jLogger.create)
-      application <- Resource.liftF(mkApplication(rpcClient, log))
+      implicit0(channel: AMQPChannel) <- rabbit.createChannel(connection)
+      rpcClient   <- Resource.liftF(RpcClient.create[F](config.rpc.queueName, rabbit))
+      log         <- Resource.liftF(Slf4jLogger.create[F])
+      application <- Resource.liftF(mkApplication[F](rpcClient, log))
     } yield application
 }

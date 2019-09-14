@@ -19,40 +19,39 @@ import io.circe.Encoder
 
 import scala.util.control.NoStackTrace
 
-class RpcServer[F[_] : Sync](rpcQueue: QueueName, rabbit: Fs2Rabbit[F], connection: AMQPConnection)(
-  implicit log: Logger[F]
-) {
+class RpcServer[F[_] : Sync](rpcQueue: QueueName, rabbit: Fs2Rabbit[F])(implicit log: Logger[F], channel: AMQPChannel) {
 
   def serve: Stream[F, Unit] =
     for {
-      (request, properties) <- decodeRequest
+      (request, properties) <- decodeRequest()
       _                     <- handleRequest(request, properties)
     } yield ()
 
-  private def decodeRequest: Stream[F, (RpcRequest, AmqpProperties)] =
+  private def decodeRequest(): Stream[F, (RpcRequest, AmqpProperties)] =
     for {
-      implicit0(channel: AMQPChannel) <- Stream.resource(rabbit.createChannel(connection))
-      _                               <- Stream.eval(rabbit.declareQueue(DeclarationQueueConfig.default(rpcQueue)))
-      consumer                        <- Stream.eval(rabbit.createAutoAckConsumer[String](rpcQueue))
-      envelope                        <- consumer.through(logPipe(log))
-      request                         <- Stream.eval(decodeData[RpcRequest](envelope.payload))
+      _        <- Stream.eval(rabbit.declareQueue(DeclarationQueueConfig.default(rpcQueue)))
+      consumer <- Stream.eval(rabbit.createAutoAckConsumer[String](rpcQueue))
+      envelope <- consumer.through(logPipe(log))
+      request  <- Stream.eval(decodeData[RpcRequest](envelope.payload))
     } yield (request, envelope.properties)
 
-  private def handleRequest(request: RpcRequest, properties: AmqpProperties): Stream[F, Unit] =
-    request match {
-      case _: ExampleRpcRequest =>
-        sendResponse(ExampleRpcResponse(taskId = UUID.randomUUID(), status = "Success"), properties)
-    }
+  private def handleRequest(request: RpcRequest, properties: AmqpProperties): Stream[F, Unit] = {
+    val response =
+      request match {
+        case _: ExampleRpcRequest =>
+          ExampleRpcResponse(taskId = UUID.randomUUID(), status = "Success")
+      }
+    sendResponse(response, properties)
+  }
 
   private def sendResponse[Response <: RpcResponse : Encoder](
     response: Response,
     properties: AmqpProperties
   ): Stream[F, Unit] =
     for {
-      implicit0(channel: AMQPChannel) <- Stream.resource(rabbit.createChannel(connection))
-      replyTo                         <- Stream.eval(properties.replyTo.liftTo[F](ReplyToNotSpecifiedException))
-      correlationId                   <- Stream.eval(properties.correlationId.liftTo[F](CorrelationIdNotSpecifiedException))
-      publisher                       <- Stream.eval(rabbit.createPublisher[AmqpMessage[String]](ExchangeName(""), RoutingKey(replyTo)))
+      replyTo       <- Stream.eval(properties.replyTo.liftTo[F](ReplyToNotSpecifiedException))
+      correlationId <- Stream.eval(properties.correlationId.liftTo[F](CorrelationIdNotSpecifiedException))
+      publisher     <- Stream.eval(rabbit.createPublisher[AmqpMessage[String]](ExchangeName(""), RoutingKey(replyTo)))
       message = AmqpMessage(
         Message(data = response, meta = deriveMeta(response)),
         AmqpProperties(correlationId = Some(correlationId))
@@ -70,8 +69,8 @@ class RpcServer[F[_] : Sync](rpcQueue: QueueName, rabbit: Fs2Rabbit[F], connecti
 }
 
 object RpcServer {
-  def apply[F[_] : Sync](rpcQueue: QueueName, rabbit: Fs2Rabbit[F], connection: AMQPConnection): F[RpcServer[F]] =
+  def create[F[_] : Sync](rpcQueue: QueueName, rabbit: Fs2Rabbit[F])(implicit channel: AMQPChannel): F[RpcServer[F]] =
     for {
       implicit0(log: Logger[F]) <- Slf4jLogger.create
-    } yield new RpcServer(rpcQueue, rabbit, connection)
+    } yield new RpcServer(rpcQueue, rabbit)
 }
