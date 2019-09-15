@@ -1,25 +1,22 @@
-package app.amqp
+package app
 
 import java.util.UUID
 
+import app.amqp.Message
 import app.amqp.model.RpcRequest._
 import app.amqp.model.RpcResponse.ExampleRpcResponse
 import app.amqp.model.{RpcRequest, RpcResponse}
 import app.util.AmqpUtil._
-import app.util.StreamUtil.liftK
 import cats.effect.Sync
 import cats.syntax.functor._
 import dev.profunktor.fs2rabbit.interpreter.Fs2Rabbit
 import dev.profunktor.fs2rabbit.model._
 import fs2.Stream
 import io.chrisdavenport.log4cats.Logger
-import io.chrisdavenport.log4cats.extras.implicits._
 import io.chrisdavenport.log4cats.slf4j.Slf4jLogger
 import io.circe.Encoder
 
-class RpcClient[F[_] : Sync](rpcQueue: QueueName, rabbit: Fs2Rabbit[F])(
-  implicit log: Logger[F], channel: AMQPChannel
-) {
+class RpcClient[F[_] : Sync](rpcQueue: QueueName, rabbit: Fs2Rabbit[F])(implicit log: Logger[F], channel: AMQPChannel) {
 
   def call[Request <: RpcRequest : Encoder](request: Request): Stream[F, RpcResponse] =
     for {
@@ -36,8 +33,7 @@ class RpcClient[F[_] : Sync](rpcQueue: QueueName, rabbit: Fs2Rabbit[F])(
         rabbit.createPublisher[AmqpMessage[String]](ExchangeName(""), RoutingKey(rpcQueue.value))
       )
 
-      _ <- Stream(messageToSend)
-        .covary
+      _ <- Stream(messageToSend).covary
         .through(jsonPipe[Message[Request]])
         .evalMap(publisher)
 
@@ -52,9 +48,8 @@ class RpcClient[F[_] : Sync](rpcQueue: QueueName, rabbit: Fs2Rabbit[F])(
       response <- Stream.eval(decodeData[RpcResponse](consumedString))
     } yield response
 
-  def handleResponse(response: RpcResponse): Stream[F, Unit] =
+  def handleResponse(response: RpcResponse): F[Unit] =
     log
-      .mapK[Stream[F, *]](liftK)
       .info {
         response match {
           case ExampleRpcResponse(taskId, status) => s"task_id: $taskId, status: $status"

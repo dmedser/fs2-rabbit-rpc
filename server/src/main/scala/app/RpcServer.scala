@@ -1,7 +1,8 @@
-package app.amqp
+package app
 
 import java.util.UUID
 
+import app.amqp.Message
 import app.amqp.model.RpcRequest.ExampleRpcRequest
 import app.amqp.model.RpcResponse._
 import app.amqp.model.{RpcRequest, RpcResponse}
@@ -21,7 +22,7 @@ import scala.util.control.NoStackTrace
 
 class RpcServer[F[_] : Sync](rpcQueue: QueueName, rabbit: Fs2Rabbit[F])(implicit log: Logger[F], channel: AMQPChannel) {
 
-  def serve: Stream[F, Unit] =
+  def serve(): Stream[F, Unit] =
     for {
       (request, properties) <- decodeRequest()
       _                     <- handleRequest(request, properties)
@@ -49,14 +50,14 @@ class RpcServer[F[_] : Sync](rpcQueue: QueueName, rabbit: Fs2Rabbit[F])(implicit
     properties: AmqpProperties
   ): Stream[F, Unit] =
     for {
-      replyTo       <- Stream.eval(properties.replyTo.liftTo[F](ReplyToNotSpecifiedException))
-      correlationId <- Stream.eval(properties.correlationId.liftTo[F](CorrelationIdNotSpecifiedException))
+      replyTo       <- Stream.eval(properties.replyTo.liftTo(ReplyToNotSpecifiedException))
+      correlationId <- Stream.eval(properties.correlationId.liftTo(CorrelationIdNotSpecifiedException))
       publisher     <- Stream.eval(rabbit.createPublisher[AmqpMessage[String]](ExchangeName(""), RoutingKey(replyTo)))
       message = AmqpMessage(
         Message(data = response, meta = deriveMeta(response)),
         AmqpProperties(correlationId = Some(correlationId))
       )
-      _ <- Stream(message).covary[F].through(jsonPipe[Message[Response]]).evalMap(publisher)
+      _ <- Stream(message).covary.through(jsonPipe[Message[Response]]).evalMap(publisher)
     } yield ()
 
   case object ReplyToNotSpecifiedException
